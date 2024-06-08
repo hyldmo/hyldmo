@@ -25,13 +25,13 @@ jobs:
           token: ${{ secrets.METRICS_TOKEN }}
 
           # Options
-          user: ${{ github.repository_owner}}
+          user: ${{ github.repository_owner }}
           template: classic
           base: header, activity, community, repositories, metadata
           base_indepth: yes
           config_timezone: Europe/Oslo
           plugin_habits: yes
-          plugin_habits_charts_type: classic
+          plugin_habits_charts_type: graph
           plugin_habits_days: 14
           plugin_habits_facts: yes
           plugin_habits_from: 200
@@ -50,6 +50,6 @@ jobs:
           plugin_languages_sections: most-used
           plugin_languages_threshold: 0%
           plugin_lines: yes
-          plugin_lines_history_limit: 99
+          plugin_lines_history_limit: 5
           plugin_lines_repositories_limit: 4
           plugin_lines_sections: base
