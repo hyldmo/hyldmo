@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1036" class="">
+<svg xmlns="http://www.w3.org/2000/svg" height="1036" class="">
     <defs>
         <style/>
     </defs>
@@ -305,7 +305,7 @@
                 <div class="column chart largeable">
                     <h3>Commit activity per hour of day</h3>
                     <div class="row margin-bottom">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="480" height="160">
+                        <svg xmlns="http://www.w3.org/2000/svg" height="160">
                             <g transform="translate(10,115)" fill="none" font-size="10" font-family="sans-serif" text-anchor="middle">
                                 <path class="domain" stroke="rgba(127, 127, 127, .8)" d="M10.5,0.5H460.5"/>
                                 <g class="tick" opacity="1" transform="translate(10.5,0)">
