@@ -31,6 +31,7 @@ jobs:
           base_indepth: yes
           config_timezone: Europe/Oslo
           plugin_habits: yes
+          plugin_habits_charts: no
           plugin_habits_charts_type: graph
           plugin_habits_days: 14
           plugin_habits_from: 200
