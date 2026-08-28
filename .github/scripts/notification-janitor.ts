@@ -9,16 +9,19 @@ const API_BASE_URL = 'https://api.github.com'
 const API_VERSION = '2026-03-10'
 const DEFAULT_CONFIG_PATH = '.github/notification-janitor.json'
 
-const SUBJECT_TYPES = ['Issue', 'PullRequest'] as const
+const SUBJECT_TYPES = ['Issue', 'PullRequest', 'Release'] as const
+const DEFAULT_SUBJECT_TYPES = ['Issue', 'PullRequest'] as const
 
 type SubjectType = (typeof SUBJECT_TYPES)[number]
 type JanitorAction = 'done'
+type ReleaseRetention = 'latest-per-repository-per-week'
 
 export interface Rule {
 	name: string
-	commentAuthors: string[]
+	commentAuthors?: string[]
 	threadAuthors?: string[]
 	subjectTypes: SubjectType[]
+	releaseRetention?: ReleaseRetention
 	action: JanitorAction
 }
 
@@ -204,16 +207,23 @@ export function validateConfig(value: unknown): Config {
 			throw new Error(`${context} must be an object`)
 		}
 
-		assertObjectKeys(rawRule, ['name', 'commentAuthors', 'threadAuthors', 'subjectTypes', 'action'], context)
+		assertObjectKeys(
+			rawRule,
+			['name', 'commentAuthors', 'threadAuthors', 'subjectTypes', 'releaseRetention', 'action'],
+			context
+		)
 
 		const name = requireString(rawRule.name, `${context}.name`)
-		const commentAuthors = requireStringArray(rawRule.commentAuthors, `${context}.commentAuthors`).map(normalizeLogin)
+		const commentAuthors =
+			rawRule.commentAuthors === undefined
+				? []
+				: requireStringArray(rawRule.commentAuthors, `${context}.commentAuthors`).map(normalizeLogin)
 		const threadAuthors =
 			rawRule.threadAuthors === undefined
 				? undefined
 				: requireStringArray(rawRule.threadAuthors, `${context}.threadAuthors`).map(normalizeLogin)
 
-		let subjectTypes: SubjectType[] = [...SUBJECT_TYPES]
+		let subjectTypes: SubjectType[] = [...DEFAULT_SUBJECT_TYPES]
 		if (rawRule.subjectTypes !== undefined) {
 			const rawSubjectTypes = requireStringArray(rawRule.subjectTypes, `${context}.subjectTypes`)
 			const invalid = rawSubjectTypes.filter(subjectType => !SUBJECT_TYPES.includes(subjectType as SubjectType))
@@ -223,6 +233,23 @@ export function validateConfig(value: unknown): Config {
 			}
 
 			subjectTypes = rawSubjectTypes as SubjectType[]
+		}
+
+		if (subjectTypes.some(subjectType => subjectType !== 'Release') && commentAuthors.length === 0) {
+			throw new Error(`${context}.commentAuthors is required for Issue and PullRequest rules`)
+		}
+
+		const releaseRetention = rawRule.releaseRetention
+		if (releaseRetention !== undefined && releaseRetention !== 'latest-per-repository-per-week') {
+			throw new Error(`${context}.releaseRetention must be "latest-per-repository-per-week"`)
+		}
+
+		if (releaseRetention !== undefined && (subjectTypes.length !== 1 || subjectTypes[0] !== 'Release')) {
+			throw new Error(`${context}.releaseRetention requires subjectTypes to be ["Release"]`)
+		}
+
+		if (releaseRetention !== undefined && threadAuthors !== undefined) {
+			throw new Error(`${context}.releaseRetention does not support threadAuthors`)
 		}
 
 		const action = rawRule.action ?? 'done'
@@ -235,6 +262,7 @@ export function validateConfig(value: unknown): Config {
 			commentAuthors,
 			threadAuthors,
 			subjectTypes,
+			releaseRetention,
 			action
 		}
 	})
@@ -308,18 +336,58 @@ function activityIsAfter(activity: Activity, cutoff: string | null): boolean {
 	return activityTime > cutoffTime
 }
 
+function isoWeekKey(timestamp: string, fallback: string): string {
+	const time = parseTimestamp(timestamp)
+	if (time === null) {
+		return `unknown-${fallback}`
+	}
+
+	const date = new Date(time)
+	const day = date.getUTCDay() || 7
+	date.setUTCDate(date.getUTCDate() + 4 - day)
+
+	const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+	const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7)
+	return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`
+}
+
+function releaseThreadsToKeep(threads: NotificationThread[], config: Config): Set<string> {
+	const keepsWeeklyReleases = config.rules.some(
+		rule => rule.subjectTypes.length === 1 && rule.subjectTypes[0] === 'Release' && rule.releaseRetention !== undefined
+	)
+
+	if (!keepsWeeklyReleases) {
+		return new Set()
+	}
+
+	const latestByRepositoryAndWeek = new Map<string, NotificationThread>()
+	for (const thread of threads) {
+		if (!thread.unread || thread.subject.type !== 'Release') {
+			continue
+		}
+
+		const key = `${thread.repository.full_name}\u0000${isoWeekKey(thread.updated_at, thread.id)}`
+		const current = latestByRepositoryAndWeek.get(key)
+		if (current === undefined || (parseTimestamp(thread.updated_at) ?? -Infinity) > (parseTimestamp(current.updated_at) ?? -Infinity)) {
+			latestByRepositoryAndWeek.set(key, thread)
+		}
+	}
+
+	return new Set([...latestByRepositoryAndWeek.values()].map(thread => thread.id))
+}
+
 function resolveThreadAuthors(authors: string[] | undefined, viewer: string): string[] | undefined {
 	return authors?.map(author => (author === '@me' ? viewer : author))
 }
 
-function applicableRules(config: Config, subjectType: SubjectType, threadAuthor: string, viewer: string): Rule[] {
+function applicableRules(config: Config, subjectType: SubjectType, threadAuthor: string | null, viewer: string): Rule[] {
 	return config.rules.filter(rule => {
 		if (!rule.subjectTypes.includes(subjectType)) {
 			return false
 		}
 
 		const authors = resolveThreadAuthors(rule.threadAuthors, viewer)
-		return authors === undefined || authors.includes(threadAuthor)
+		return authors === undefined || (threadAuthor !== null && authors.includes(threadAuthor))
 	})
 }
 
@@ -399,7 +467,8 @@ export async function evaluateNotification(
 	client: ApiClient,
 	thread: NotificationThread,
 	config: Config,
-	viewerLogin: string
+	viewerLogin: string,
+	releaseThreadsToKeep: ReadonlySet<string> = new Set()
 ): Promise<Evaluation> {
 	if (!thread.unread) {
 		return { decision: 'skip', reason: 'already-read' }
@@ -407,6 +476,40 @@ export async function evaluateNotification(
 
 	if (!SUBJECT_TYPES.includes(thread.subject.type as SubjectType)) {
 		return { decision: 'skip', reason: 'unsupported-subject' }
+	}
+
+	const subjectType = thread.subject.type as SubjectType
+	const viewer = normalizeLogin(viewerLogin)
+
+	if (subjectType === 'Release') {
+		const matchingRules = applicableRules(config, subjectType, null, viewer)
+		if (matchingRules.length === 0) {
+			return { decision: 'skip', reason: 'thread-outside-rule-scope' }
+		}
+
+		if (
+			matchingRules.some(rule => rule.releaseRetention === 'latest-per-repository-per-week') &&
+			releaseThreadsToKeep.has(thread.id)
+		) {
+			return { decision: 'skip', reason: 'release-retained-for-week' }
+		}
+
+		const currentThread = await client.request<NotificationThread>(
+			`/notifications/threads/${encodeURIComponent(thread.id)}`
+		)
+
+		if (
+			currentThread.updated_at !== thread.updated_at ||
+			currentThread.subject.latest_comment_url !== thread.subject.latest_comment_url
+		) {
+			return { decision: 'skip', reason: 'thread-changed-during-check' }
+		}
+
+		return {
+			decision: 'done',
+			commentAuthor: 'release',
+			matchedRules: matchingRules.map(rule => rule.name)
+		}
 	}
 
 	if (thread.subject.url === null || thread.subject.latest_comment_url === null) {
@@ -431,10 +534,8 @@ export async function evaluateNotification(
 		return { decision: 'skip', reason: 'unknown-thread-author' }
 	}
 
-	const subjectType = thread.subject.type as SubjectType
-	const viewer = normalizeLogin(viewerLogin)
 	const matchingRules = applicableRules(config, subjectType, threadAuthor, viewer)
-	const mutedAuthors = new Set(matchingRules.flatMap(rule => rule.commentAuthors))
+	const mutedAuthors = new Set(matchingRules.flatMap(rule => rule.commentAuthors ?? []))
 
 	if (!mutedAuthors.has(latestCommentAuthor)) {
 		return { decision: 'skip', reason: 'thread-outside-rule-scope' }
@@ -598,7 +699,7 @@ async function writeStepSummary(summary: RunSummary): Promise<void> {
 		'',
 		`- Mode: ${summary.dryRun ? 'dry run' : 'apply'}`,
 		`- Notifications scanned: ${summary.scanned}`,
-		`- Matching bot notifications: ${summary.candidates}`,
+		`- Matching notifications: ${summary.candidates}`,
 		`- Notifications marked Done: ${summary.completed}`,
 		`- Errors: ${summary.errors}`,
 		''
@@ -621,10 +722,11 @@ export async function runJanitor(client: ApiClient, config: Config): Promise<Run
 		dryRun: config.dryRun,
 		skipped: new Map()
 	}
+	const releaseThreadIdsToKeep = releaseThreadsToKeep(threads, config)
 
 	await processWithConcurrency(threads, config.concurrency, async thread => {
 		try {
-			const evaluation = await evaluateNotification(client, thread, config, viewerLogin)
+			const evaluation = await evaluateNotification(client, thread, config, viewerLogin, releaseThreadIdsToKeep)
 
 			if (evaluation.decision === 'skip') {
 				increment(summary.skipped, evaluation.reason)

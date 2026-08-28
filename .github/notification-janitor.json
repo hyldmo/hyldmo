@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"dryRun": true,
+	"dryRun": false,
 	"maxNotifications": 200,
 	"maxActivityPages": 20,
 	"notificationCommentSkewSeconds": 120,
@@ -11,6 +11,12 @@
 			"commentAuthors": ["github-actions[bot]"],
 			"threadAuthors": ["@me"],
 			"subjectTypes": ["PullRequest", "Issue"],
+			"action": "done"
+		},
+		{
+			"name": "Keep one release notification per repository each week",
+			"subjectTypes": ["Release"],
+			"releaseRetention": "latest-per-repository-per-week",
 			"action": "done"
 		}
 	]
