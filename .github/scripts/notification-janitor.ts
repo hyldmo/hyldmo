@@ -324,7 +324,7 @@ export function validateConfig(value: unknown): Config {
 		maxNotifications: optionalInteger(value.maxNotifications, 200, 'Configuration maxNotifications', 1, 1_000),
 		notificationLookbackHours: optionalInteger(
 			value.notificationLookbackHours,
-			72,
+			30,
 			'Configuration notificationLookbackHours',
 			1,
 			168

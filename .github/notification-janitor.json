@@ -2,7 +2,7 @@
 	"version": 1,
 	"dryRun": false,
 	"maxNotifications": 200,
-	"notificationLookbackHours": 72,
+	"notificationLookbackHours": 30,
 	"maxActivityPages": 20,
 	"notificationCommentSkewSeconds": 120,
 	"concurrency": 5,

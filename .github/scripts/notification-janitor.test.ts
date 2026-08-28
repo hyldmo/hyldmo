@@ -19,7 +19,7 @@ function config(overrides: Partial<Config> = {}): Config {
 		version: 1,
 		dryRun: true,
 		maxNotifications: 200,
-		notificationLookbackHours: 72,
+		notificationLookbackHours: 30,
 		maxActivityPages: 20,
 		notificationCommentSkewSeconds: 120,
 		concurrency: 5,
@@ -143,7 +143,7 @@ test('validates and normalizes a configuration', () => {
 	})
 
 	assert.equal(result.maxNotifications, 200)
-	assert.equal(result.notificationLookbackHours, 72)
+	assert.equal(result.notificationLookbackHours, 30)
 	assert.equal(result.concurrency, 5)
 	assert.deepEqual(result.rules[0]?.commentAuthors, ['github-actions[bot]'])
 	assert.deepEqual(result.rules[0]?.threadAuthors, ['@me'])
@@ -469,7 +469,7 @@ test('dry-run reports a candidate without marking it Done', async () => {
 	assert.equal(summary.completed, 0)
 	assert.equal(
 		client.paginationRequests[0],
-		'/notifications?all=true&per_page=50&since=2026-08-25T12%3A00%3A00.000Z'
+		'/notifications?all=true&per_page=50&since=2026-08-27T06%3A00%3A00.000Z'
 	)
 	assert.equal(
 		client.requests.some(request => request.method === 'DELETE'),
