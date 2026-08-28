@@ -1,0 +1,17 @@
+{
+	"version": 1,
+	"dryRun": true,
+	"maxNotifications": 200,
+	"maxActivityPages": 20,
+	"notificationCommentSkewSeconds": 120,
+	"concurrency": 5,
+	"rules": [
+		{
+			"name": "GitHub Actions comments on my threads",
+			"commentAuthors": ["github-actions[bot]"],
+			"threadAuthors": ["@me"],
+			"subjectTypes": ["PullRequest", "Issue"],
+			"action": "done"
+		}
+	]
+}
