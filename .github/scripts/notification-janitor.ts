@@ -11,6 +11,18 @@ const DEFAULT_CONFIG_PATH = '.github/notification-janitor.json'
 
 const SUBJECT_TYPES = ['Issue', 'PullRequest', 'Release'] as const
 const DEFAULT_SUBJECT_TYPES = ['Issue', 'PullRequest'] as const
+const STATE_CHANGE_EVENTS = new Set([
+	'base_ref_changed',
+	'closed',
+	'converted_to_draft',
+	'head_ref_deleted',
+	'locked',
+	'merged',
+	'ready_for_review',
+	'renamed',
+	'reopened',
+	'unlocked'
+])
 
 type SubjectType = (typeof SUBJECT_TYPES)[number]
 type JanitorAction = 'done'
@@ -19,6 +31,7 @@ type ReleaseRetention = 'latest-per-repository-per-week'
 export interface Rule {
 	name: string
 	commentAuthors?: string[]
+	stateChangeAuthors?: string[]
 	threadAuthors?: string[]
 	subjectTypes: SubjectType[]
 	releaseRetention?: ReleaseRetention
@@ -50,6 +63,12 @@ interface CommentResource {
 	created_at?: string | null
 	updated_at?: string | null
 	submitted_at?: string | null
+}
+
+interface TimelineEvent {
+	event?: string | null
+	actor?: Actor | null
+	created_at?: string | null
 }
 
 export interface NotificationThread {
@@ -91,6 +110,10 @@ export interface ApiClient {
 interface Activity {
 	author: string | null
 	timestamp: string | null
+}
+
+interface StateChange extends Activity {
+	event: string | null
 }
 
 export type Evaluation =
@@ -209,7 +232,15 @@ export function validateConfig(value: unknown): Config {
 
 		assertObjectKeys(
 			rawRule,
-			['name', 'commentAuthors', 'threadAuthors', 'subjectTypes', 'releaseRetention', 'action'],
+			[
+				'name',
+				'commentAuthors',
+				'stateChangeAuthors',
+				'threadAuthors',
+				'subjectTypes',
+				'releaseRetention',
+				'action'
+			],
 			context
 		)
 
@@ -218,6 +249,10 @@ export function validateConfig(value: unknown): Config {
 			rawRule.commentAuthors === undefined
 				? []
 				: requireStringArray(rawRule.commentAuthors, `${context}.commentAuthors`).map(normalizeLogin)
+		const stateChangeAuthors =
+			rawRule.stateChangeAuthors === undefined
+				? []
+				: requireStringArray(rawRule.stateChangeAuthors, `${context}.stateChangeAuthors`).map(normalizeLogin)
 		const threadAuthors =
 			rawRule.threadAuthors === undefined
 				? undefined
@@ -235,8 +270,16 @@ export function validateConfig(value: unknown): Config {
 			subjectTypes = rawSubjectTypes as SubjectType[]
 		}
 
-		if (subjectTypes.some(subjectType => subjectType !== 'Release') && commentAuthors.length === 0) {
-			throw new Error(`${context}.commentAuthors is required for Issue and PullRequest rules`)
+		if (
+			subjectTypes.some(subjectType => subjectType !== 'Release') &&
+			commentAuthors.length === 0 &&
+			stateChangeAuthors.length === 0
+		) {
+			throw new Error(`${context} requires commentAuthors or stateChangeAuthors for Issue and PullRequest rules`)
+		}
+
+		if (stateChangeAuthors.length > 0 && (subjectTypes.length !== 1 || subjectTypes[0] !== 'PullRequest')) {
+			throw new Error(`${context}.stateChangeAuthors requires subjectTypes to be ["PullRequest"]`)
 		}
 
 		const releaseRetention = rawRule.releaseRetention
@@ -260,6 +303,7 @@ export function validateConfig(value: unknown): Config {
 		return {
 			name,
 			commentAuthors,
+			stateChangeAuthors,
 			threadAuthors,
 			subjectTypes,
 			releaseRetention,
@@ -423,6 +467,14 @@ function activityFrom(resource: CommentResource): Activity {
 	}
 }
 
+function stateChangeFrom(event: TimelineEvent): StateChange {
+	return {
+		author: actorLogin(event.actor),
+		timestamp: event.created_at ?? null,
+		event: event.event ?? null
+	}
+}
+
 async function listActivities(
 	client: ApiClient,
 	thread: NotificationThread,
@@ -461,6 +513,31 @@ async function listActivities(
 	}
 
 	return activities.filter(activity => activityIsAfter(activity, thread.last_read_at))
+}
+
+async function listStateChanges(
+	client: ApiClient,
+	thread: NotificationThread,
+	config: Config
+): Promise<StateChange[]> {
+	if (thread.subject.url === null) {
+		return []
+	}
+
+	const repository = repositoryPath(thread.repository.full_name)
+	const issueNumber = extractIssueNumber(thread.subject.url)
+	const since = thread.last_read_at === null ? '' : `&since=${encodeURIComponent(thread.last_read_at)}`
+	const events = await client.paginate<TimelineEvent>(
+		`/repos/${repository}/issues/${issueNumber}/timeline?per_page=100${since}`,
+		{
+			maxPages: config.maxActivityPages,
+			failOnTruncation: true
+		}
+	)
+
+	return events
+		.map(stateChangeFrom)
+		.filter(stateChange => STATE_CHANGE_EVENTS.has(stateChange.event ?? '') && activityIsAfter(stateChange, thread.last_read_at))
 }
 
 export async function evaluateNotification(
@@ -512,11 +589,61 @@ export async function evaluateNotification(
 		}
 	}
 
-	if (thread.subject.url === null || thread.subject.latest_comment_url === null) {
+	if (thread.subject.url === null) {
+		return { decision: 'skip', reason: 'missing-subject-link' }
+	}
+
+	const subject = await client.request<SubjectResource>(thread.subject.url)
+	const threadAuthor = actorLogin(subject.user)
+	if (threadAuthor === null) {
+		return { decision: 'skip', reason: 'unknown-thread-author' }
+	}
+
+	const matchingRules = applicableRules(config, subjectType, threadAuthor, viewer)
+	const stateChangeAuthors = new Set(
+		matchingRules.flatMap(rule => resolveThreadAuthors(rule.stateChangeAuthors, viewer) ?? [])
+	)
+	if (stateChangeAuthors.size > 0) {
+		const stateChanges = await listStateChanges(client, thread, config)
+		const matchingStateChange = stateChanges.find(
+			stateChange =>
+				stateChange.author !== null &&
+				stateChangeAuthors.has(stateChange.author) &&
+				timestampsAreClose(thread.updated_at, stateChange.timestamp, config.notificationCommentSkewSeconds)
+		)
+
+		if (matchingStateChange) {
+			const mutedAuthors = new Set(matchingRules.flatMap(rule => rule.commentAuthors ?? []))
+			const activities = await listActivities(client, thread, subjectType, config)
+
+			if (activities.some(activity => activity.author === null || !mutedAuthors.has(activity.author))) {
+				return { decision: 'skip', reason: 'human-activity-after-last-read' }
+			}
+
+			const currentThread = await client.request<NotificationThread>(
+				`/notifications/threads/${encodeURIComponent(thread.id)}`
+			)
+
+			if (
+				currentThread.updated_at !== thread.updated_at ||
+				currentThread.subject.latest_comment_url !== thread.subject.latest_comment_url
+			) {
+				return { decision: 'skip', reason: 'thread-changed-during-check' }
+			}
+
+			return {
+				decision: 'done',
+				commentAuthor: matchingStateChange.author,
+				matchedRules: matchingRules.map(rule => rule.name)
+			}
+		}
+	}
+
+	if (thread.subject.latest_comment_url === null) {
 		return { decision: 'skip', reason: 'missing-comment-link' }
 	}
 
-	const configuredCommentAuthors = new Set(config.rules.flatMap(rule => rule.commentAuthors))
+	const configuredCommentAuthors = new Set(config.rules.flatMap(rule => rule.commentAuthors ?? []))
 	const latestComment = await client.request<CommentResource>(thread.subject.latest_comment_url)
 	const latestCommentAuthor = actorLogin(latestComment.user)
 
@@ -528,13 +655,6 @@ export async function evaluateNotification(
 		return { decision: 'skip', reason: 'comment-does-not-explain-update' }
 	}
 
-	const subject = await client.request<SubjectResource>(thread.subject.url)
-	const threadAuthor = actorLogin(subject.user)
-	if (threadAuthor === null) {
-		return { decision: 'skip', reason: 'unknown-thread-author' }
-	}
-
-	const matchingRules = applicableRules(config, subjectType, threadAuthor, viewer)
 	const mutedAuthors = new Set(matchingRules.flatMap(rule => rule.commentAuthors ?? []))
 
 	if (!mutedAuthors.has(latestCommentAuthor)) {

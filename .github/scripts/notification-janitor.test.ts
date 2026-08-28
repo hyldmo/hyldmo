@@ -163,7 +163,7 @@ test('requires comment authors for Issue and PullRequest rules', () => {
 					}
 				]
 			}),
-		/commentAuthors is required/
+		/requires commentAuthors or stateChangeAuthors/
 	)
 })
 
@@ -175,6 +175,73 @@ test('matches bot-only activity on a thread created by the viewer', async () => 
 		decision: 'done',
 		commentAuthor: 'github-actions[bot]',
 		matchedRules: ['GitHub Actions comments on my threads']
+	})
+})
+
+test('matches a state change made by the viewer on the viewer’s pull request', async () => {
+	const thread = notification({
+		updated_at: '2026-08-28T10:00:00Z',
+		last_read_at: '2026-08-28T09:00:00Z'
+	})
+	const client = readyClient(thread, [])
+	client.pages.set('/repos/acme/widgets/issues/42/timeline', [
+		{
+			event: 'merged',
+			actor: { login: 'hyldmo', type: 'User' },
+			created_at: '2026-08-28T09:59:30Z'
+		}
+	])
+	const stateChangeConfig = config({
+		rules: [
+			{
+				name: 'My pull request state changes',
+				stateChangeAuthors: ['@me'],
+				threadAuthors: ['@me'],
+				subjectTypes: ['PullRequest'],
+				action: 'done'
+			}
+		]
+	})
+
+	const result = await evaluateNotification(client, thread, stateChangeConfig, 'hyldmo')
+
+	assert.deepEqual(result, {
+		decision: 'done',
+		commentAuthor: 'hyldmo',
+		matchedRules: ['My pull request state changes']
+	})
+})
+
+test('preserves a state change notification with a human comment after the last read', async () => {
+	const thread = notification({
+		updated_at: '2026-08-28T10:00:00Z',
+		last_read_at: '2026-08-28T09:00:00Z'
+	})
+	const client = readyClient(thread, [humanComment('2026-08-28T09:30:00Z')])
+	client.pages.set('/repos/acme/widgets/issues/42/timeline', [
+		{
+			event: 'merged',
+			actor: { login: 'hyldmo', type: 'User' },
+			created_at: '2026-08-28T09:59:30Z'
+		}
+	])
+	const stateChangeConfig = config({
+		rules: [
+			{
+				name: 'My pull request state changes',
+				stateChangeAuthors: ['@me'],
+				threadAuthors: ['@me'],
+				subjectTypes: ['PullRequest'],
+				action: 'done'
+			}
+		]
+	})
+
+	const result = await evaluateNotification(client, thread, stateChangeConfig, 'hyldmo')
+
+	assert.deepEqual(result, {
+		decision: 'skip',
+		reason: 'human-activity-after-last-read'
 	})
 })
 

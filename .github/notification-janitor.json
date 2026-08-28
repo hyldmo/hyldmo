@@ -14,6 +14,13 @@
 			"action": "done"
 		},
 		{
+			"name": "My pull request state changes",
+			"stateChangeAuthors": ["@me"],
+			"threadAuthors": ["@me"],
+			"subjectTypes": ["PullRequest"],
+			"action": "done"
+		},
+		{
 			"name": "Keep one release notification per repository each week",
 			"subjectTypes": ["Release"],
 			"releaseRetention": "latest-per-repository-per-week",
