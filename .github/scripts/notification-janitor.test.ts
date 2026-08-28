@@ -19,6 +19,7 @@ function config(overrides: Partial<Config> = {}): Config {
 		version: 1,
 		dryRun: true,
 		maxNotifications: 200,
+		notificationLookbackHours: 72,
 		maxActivityPages: 20,
 		notificationCommentSkewSeconds: 120,
 		concurrency: 5,
@@ -57,6 +58,7 @@ function notification(overrides: Partial<NotificationThread> = {}): Notification
 
 class FakeClient implements ApiClient {
 	readonly requests: Array<{ endpoint: string; method: string }> = []
+	readonly paginationRequests: string[] = []
 	readonly responses = new Map<string, unknown>()
 	readonly pages = new Map<string, unknown[]>()
 
@@ -76,6 +78,7 @@ class FakeClient implements ApiClient {
 	}
 
 	async paginate<T>(endpoint: string): Promise<T[]> {
+		this.paginationRequests.push(endpoint)
 		const entry = [...this.pages.entries()].find(([prefix]) => endpoint.startsWith(prefix))
 
 		if (!entry) {
@@ -140,6 +143,7 @@ test('validates and normalizes a configuration', () => {
 	})
 
 	assert.equal(result.maxNotifications, 200)
+	assert.equal(result.notificationLookbackHours, 72)
 	assert.equal(result.concurrency, 5)
 	assert.deepEqual(result.rules[0]?.commentAuthors, ['github-actions[bot]'])
 	assert.deepEqual(result.rules[0]?.threadAuthors, ['@me'])
@@ -459,10 +463,14 @@ test('dry-run reports a candidate without marking it Done', async () => {
 	client.responses.set('/user', { login: 'hyldmo' })
 	client.pages.set('/notifications?all=true&per_page=50', [thread])
 
-	const summary = await runJanitor(client, config({ dryRun: true }))
+	const summary = await runJanitor(client, config({ dryRun: true }), new Date('2026-08-28T12:00:00Z'))
 
 	assert.equal(summary.candidates, 1)
 	assert.equal(summary.completed, 0)
+	assert.equal(
+		client.paginationRequests[0],
+		'/notifications?all=true&per_page=50&since=2026-08-25T12%3A00%3A00.000Z'
+	)
 	assert.equal(
 		client.requests.some(request => request.method === 'DELETE'),
 		false
@@ -475,7 +483,7 @@ test('apply mode marks a matching notification Done', async () => {
 	client.responses.set('/user', { login: 'hyldmo' })
 	client.pages.set('/notifications?all=true&per_page=50', [thread])
 
-	const summary = await runJanitor(client, config({ dryRun: false }))
+	const summary = await runJanitor(client, config({ dryRun: false }), new Date('2026-08-28T12:00:00Z'))
 
 	assert.equal(summary.completed, 1)
 	assert.equal(
