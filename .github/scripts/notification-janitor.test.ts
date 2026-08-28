@@ -150,6 +150,23 @@ test('rejects unknown configuration fields', () => {
 	)
 })
 
+test('requires comment authors for Issue and PullRequest rules', () => {
+	assert.throws(
+		() =>
+			validateConfig({
+				version: 1,
+				dryRun: true,
+				rules: [
+					{
+						name: 'Incomplete pull request rule',
+						subjectTypes: ['PullRequest']
+					}
+				]
+			}),
+		/commentAuthors is required/
+	)
+})
+
 test('matches bot-only activity on a thread created by the viewer', async () => {
 	const thread = notification()
 	const result = await evaluateNotification(readyClient(thread), thread, config(), 'hyldmo')
@@ -159,6 +176,110 @@ test('matches bot-only activity on a thread created by the viewer', async () => 
 		commentAuthor: 'github-actions[bot]',
 		matchedRules: ['GitHub Actions comments on my threads']
 	})
+})
+
+test('matches a release rule without fetching a comment or release', async () => {
+	const thread = notification({
+		subject: {
+			title: 'v1.2.3',
+			type: 'Release',
+			url: 'https://api.github.com/repos/acme/widgets/releases/99',
+			latest_comment_url: 'https://api.github.com/repos/acme/widgets/releases/99'
+		}
+	})
+	const client = readyClient(thread)
+	const releaseConfig = config({
+		rules: [
+			{
+				name: 'Keep one release notification per repository each week',
+				subjectTypes: ['Release'],
+				releaseRetention: 'latest-per-repository-per-week',
+				action: 'done'
+			}
+		]
+	})
+
+	const result = await evaluateNotification(client, thread, releaseConfig, 'hyldmo')
+
+	assert.deepEqual(result, {
+		decision: 'done',
+		commentAuthor: 'release',
+		matchedRules: ['Keep one release notification per repository each week']
+	})
+	assert.deepEqual(client.requests, [{ endpoint: '/notifications/threads/12345', method: 'GET' }])
+})
+
+test('keeps the latest release notification for its repository and week', async () => {
+	const thread = notification({
+		subject: {
+			title: 'v1.2.3',
+			type: 'Release',
+			url: 'https://api.github.com/repos/acme/widgets/releases/99',
+			latest_comment_url: 'https://api.github.com/repos/acme/widgets/releases/99'
+		}
+	})
+	const client = readyClient(thread)
+	const releaseConfig = config({
+		rules: [
+			{
+				name: 'Keep one release notification per repository each week',
+				subjectTypes: ['Release'],
+				releaseRetention: 'latest-per-repository-per-week',
+				action: 'done'
+			}
+		]
+	})
+
+	const result = await evaluateNotification(client, thread, releaseConfig, 'hyldmo', new Set([thread.id]))
+
+	assert.deepEqual(result, {
+		decision: 'skip',
+		reason: 'release-retained-for-week'
+	})
+	assert.deepEqual(client.requests, [])
+})
+
+test('marks older releases from the same repository and week Done', async () => {
+	const olderRelease = notification({
+		id: 'older-release',
+		updated_at: '2026-08-18T10:00:00Z',
+		subject: {
+			title: 'v1.2.2',
+			type: 'Release',
+			url: 'https://api.github.com/repos/acme/widgets/releases/98',
+			latest_comment_url: 'https://api.github.com/repos/acme/widgets/releases/98'
+		}
+	})
+	const latestRelease = notification({
+		id: 'latest-release',
+		updated_at: '2026-08-19T10:00:00Z',
+		subject: {
+			title: 'v1.2.3',
+			type: 'Release',
+			url: 'https://api.github.com/repos/acme/widgets/releases/99',
+			latest_comment_url: 'https://api.github.com/repos/acme/widgets/releases/99'
+		}
+	})
+	const client = readyClient(olderRelease)
+	client.responses.set('/user', { login: 'hyldmo' })
+	client.responses.set('/notifications/threads/older-release', olderRelease)
+	client.pages.set('/notifications?all=false&per_page=50', [olderRelease, latestRelease])
+	const releaseConfig = config({
+		rules: [
+			{
+				name: 'Keep one release notification per repository each week',
+				subjectTypes: ['Release'],
+				releaseRetention: 'latest-per-repository-per-week',
+				action: 'done'
+			}
+		]
+	})
+
+	const summary = await runJanitor(client, releaseConfig)
+
+	assert.equal(summary.candidates, 1)
+	assert.equal(summary.completed, 0)
+	assert.equal(summary.skipped.get('release-retained-for-week'), 1)
 })
 
 test('preserves a notification with human activity after the last read', async () => {
