@@ -19,6 +19,7 @@ function config(overrides: Partial<Config> = {}): Config {
 		version: 1,
 		dryRun: true,
 		maxNotifications: 200,
+		notificationLookbackHours: 30,
 		maxActivityPages: 20,
 		notificationCommentSkewSeconds: 120,
 		concurrency: 5,
@@ -57,6 +58,7 @@ function notification(overrides: Partial<NotificationThread> = {}): Notification
 
 class FakeClient implements ApiClient {
 	readonly requests: Array<{ endpoint: string; method: string }> = []
+	readonly paginationRequests: string[] = []
 	readonly responses = new Map<string, unknown>()
 	readonly pages = new Map<string, unknown[]>()
 
@@ -76,6 +78,7 @@ class FakeClient implements ApiClient {
 	}
 
 	async paginate<T>(endpoint: string): Promise<T[]> {
+		this.paginationRequests.push(endpoint)
 		const entry = [...this.pages.entries()].find(([prefix]) => endpoint.startsWith(prefix))
 
 		if (!entry) {
@@ -140,6 +143,7 @@ test('validates and normalizes a configuration', () => {
 	})
 
 	assert.equal(result.maxNotifications, 200)
+	assert.equal(result.notificationLookbackHours, 30)
 	assert.equal(result.concurrency, 5)
 	assert.deepEqual(result.rules[0]?.commentAuthors, ['github-actions[bot]'])
 	assert.deepEqual(result.rules[0]?.threadAuthors, ['@me'])
@@ -373,7 +377,7 @@ test('marks older releases from the same repository and week Done', async () => 
 	const client = readyClient(olderRelease)
 	client.responses.set('/user', { login: 'hyldmo' })
 	client.responses.set('/notifications/threads/older-release', olderRelease)
-	client.pages.set('/notifications?all=false&per_page=50', [olderRelease, latestRelease])
+	client.pages.set('/notifications?all=true&per_page=50', [olderRelease, latestRelease])
 	const releaseConfig = config({
 		rules: [
 			{
@@ -457,12 +461,16 @@ test('dry-run reports a candidate without marking it Done', async () => {
 	const thread = notification()
 	const client = readyClient(thread)
 	client.responses.set('/user', { login: 'hyldmo' })
-	client.pages.set('/notifications?all=false&per_page=50', [thread])
+	client.pages.set('/notifications?all=true&per_page=50', [thread])
 
-	const summary = await runJanitor(client, config({ dryRun: true }))
+	const summary = await runJanitor(client, config({ dryRun: true }), new Date('2026-08-28T12:00:00Z'))
 
 	assert.equal(summary.candidates, 1)
 	assert.equal(summary.completed, 0)
+	assert.equal(
+		client.paginationRequests[0],
+		'/notifications?all=true&per_page=50&since=2026-08-27T06%3A00%3A00.000Z'
+	)
 	assert.equal(
 		client.requests.some(request => request.method === 'DELETE'),
 		false
@@ -470,12 +478,12 @@ test('dry-run reports a candidate without marking it Done', async () => {
 })
 
 test('apply mode marks a matching notification Done', async () => {
-	const thread = notification()
+	const thread = notification({ unread: false })
 	const client = readyClient(thread)
 	client.responses.set('/user', { login: 'hyldmo' })
-	client.pages.set('/notifications?all=false&per_page=50', [thread])
+	client.pages.set('/notifications?all=true&per_page=50', [thread])
 
-	const summary = await runJanitor(client, config({ dryRun: false }))
+	const summary = await runJanitor(client, config({ dryRun: false }), new Date('2026-08-28T12:00:00Z'))
 
 	assert.equal(summary.completed, 1)
 	assert.equal(

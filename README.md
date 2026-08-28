@@ -48,8 +48,10 @@ Edit [`.github/notification-janitor.json`](.github/notification-janitor.json):
 `commentAuthors` contains exact GitHub logins and ignores letter case. `@me`
 resolves to the token owner. Remove `threadAuthors` to apply a rule to threads
 created by anyone. Rules apply across all repositories because the configuration
-has no repository selector. The default `concurrency` value runs five notification
-checks at a time and accepts values from 1 through 10.
+has no repository selector. `notificationLookbackHours` defaults to 30. It lets
+the janitor process a new notification after you open it, while avoiding old Done
+notifications returned by GitHub's API. The default `concurrency` value runs five
+notification checks at a time and accepts values from 1 through 10.
 
 The scheduled workflow runs daily at 04:17 UTC and follows the configuration's
 `dryRun` value. Manual runs provide a `dry-run` or `apply` choice that overrides

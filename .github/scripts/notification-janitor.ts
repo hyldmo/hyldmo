@@ -42,6 +42,7 @@ export interface Config {
 	version: 1
 	dryRun: boolean
 	maxNotifications: number
+	notificationLookbackHours: number
 	maxActivityPages: number
 	notificationCommentSkewSeconds: number
 	concurrency: number
@@ -203,6 +204,7 @@ export function validateConfig(value: unknown): Config {
 			'version',
 			'dryRun',
 			'maxNotifications',
+			'notificationLookbackHours',
 			'maxActivityPages',
 			'notificationCommentSkewSeconds',
 			'concurrency',
@@ -320,6 +322,13 @@ export function validateConfig(value: unknown): Config {
 		version: 1,
 		dryRun: value.dryRun,
 		maxNotifications: optionalInteger(value.maxNotifications, 200, 'Configuration maxNotifications', 1, 1_000),
+		notificationLookbackHours: optionalInteger(
+			value.notificationLookbackHours,
+			30,
+			'Configuration notificationLookbackHours',
+			1,
+			168
+		),
 		maxActivityPages: optionalInteger(value.maxActivityPages, 20, 'Configuration maxActivityPages', 1, 100),
 		notificationCommentSkewSeconds: optionalInteger(
 			value.notificationCommentSkewSeconds,
@@ -406,7 +415,7 @@ function releaseThreadsToKeep(threads: NotificationThread[], config: Config): Se
 
 	const latestByRepositoryAndWeek = new Map<string, NotificationThread>()
 	for (const thread of threads) {
-		if (!thread.unread || thread.subject.type !== 'Release') {
+		if (thread.subject.type !== 'Release') {
 			continue
 		}
 
@@ -547,10 +556,6 @@ export async function evaluateNotification(
 	viewerLogin: string,
 	releaseThreadsToKeep: ReadonlySet<string> = new Set()
 ): Promise<Evaluation> {
-	if (!thread.unread) {
-		return { decision: 'skip', reason: 'already-read' }
-	}
-
 	if (!SUBJECT_TYPES.includes(thread.subject.type as SubjectType)) {
 		return { decision: 'skip', reason: 'unsupported-subject' }
 	}
@@ -831,12 +836,16 @@ async function writeStepSummary(summary: RunSummary): Promise<void> {
 	await appendFile(stepSummaryPath, `${lines.join('\n')}\n`, 'utf8')
 }
 
-export async function runJanitor(client: ApiClient, config: Config): Promise<RunSummary> {
+export async function runJanitor(client: ApiClient, config: Config, now = new Date()): Promise<RunSummary> {
 	const viewer = await client.request<Viewer>('/user')
 	const viewerLogin = requireString(viewer.login, 'Authenticated user login')
-	const threads = await client.paginate<NotificationThread>('/notifications?all=false&per_page=50', {
-		maxItems: config.maxNotifications
-	})
+	const since = new Date(now.getTime() - config.notificationLookbackHours * 3_600_000).toISOString()
+	const threads = await client.paginate<NotificationThread>(
+		`/notifications?all=true&per_page=50&since=${encodeURIComponent(since)}`,
+		{
+			maxItems: config.maxNotifications
+		}
+	)
 	const summary: RunSummary = {
 		scanned: threads.length,
 		candidates: 0,
