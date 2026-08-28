@@ -406,7 +406,7 @@ function releaseThreadsToKeep(threads: NotificationThread[], config: Config): Se
 
 	const latestByRepositoryAndWeek = new Map<string, NotificationThread>()
 	for (const thread of threads) {
-		if (!thread.unread || thread.subject.type !== 'Release') {
+		if (thread.subject.type !== 'Release') {
 			continue
 		}
 
@@ -547,10 +547,6 @@ export async function evaluateNotification(
 	viewerLogin: string,
 	releaseThreadsToKeep: ReadonlySet<string> = new Set()
 ): Promise<Evaluation> {
-	if (!thread.unread) {
-		return { decision: 'skip', reason: 'already-read' }
-	}
-
 	if (!SUBJECT_TYPES.includes(thread.subject.type as SubjectType)) {
 		return { decision: 'skip', reason: 'unsupported-subject' }
 	}
@@ -834,7 +830,7 @@ async function writeStepSummary(summary: RunSummary): Promise<void> {
 export async function runJanitor(client: ApiClient, config: Config): Promise<RunSummary> {
 	const viewer = await client.request<Viewer>('/user')
 	const viewerLogin = requireString(viewer.login, 'Authenticated user login')
-	const threads = await client.paginate<NotificationThread>('/notifications?all=false&per_page=50', {
+	const threads = await client.paginate<NotificationThread>('/notifications?all=true&per_page=50', {
 		maxItems: config.maxNotifications
 	})
 	const summary: RunSummary = {

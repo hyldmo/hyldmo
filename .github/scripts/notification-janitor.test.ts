@@ -373,7 +373,7 @@ test('marks older releases from the same repository and week Done', async () => 
 	const client = readyClient(olderRelease)
 	client.responses.set('/user', { login: 'hyldmo' })
 	client.responses.set('/notifications/threads/older-release', olderRelease)
-	client.pages.set('/notifications?all=false&per_page=50', [olderRelease, latestRelease])
+	client.pages.set('/notifications?all=true&per_page=50', [olderRelease, latestRelease])
 	const releaseConfig = config({
 		rules: [
 			{
@@ -457,7 +457,7 @@ test('dry-run reports a candidate without marking it Done', async () => {
 	const thread = notification()
 	const client = readyClient(thread)
 	client.responses.set('/user', { login: 'hyldmo' })
-	client.pages.set('/notifications?all=false&per_page=50', [thread])
+	client.pages.set('/notifications?all=true&per_page=50', [thread])
 
 	const summary = await runJanitor(client, config({ dryRun: true }))
 
@@ -470,10 +470,10 @@ test('dry-run reports a candidate without marking it Done', async () => {
 })
 
 test('apply mode marks a matching notification Done', async () => {
-	const thread = notification()
+	const thread = notification({ unread: false })
 	const client = readyClient(thread)
 	client.responses.set('/user', { login: 'hyldmo' })
-	client.pages.set('/notifications?all=false&per_page=50', [thread])
+	client.pages.set('/notifications?all=true&per_page=50', [thread])
 
 	const summary = await runJanitor(client, config({ dryRun: false }))
 
