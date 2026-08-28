@@ -613,7 +613,10 @@ export async function evaluateNotification(
 		)
 
 		if (matchingStateChange) {
-			const mutedAuthors = new Set(matchingRules.flatMap(rule => rule.commentAuthors ?? []))
+			const mutedAuthors = new Set([
+				...matchingRules.flatMap(rule => rule.commentAuthors ?? []),
+				...stateChangeAuthors
+			])
 			const activities = await listActivities(client, thread, subjectType, config)
 
 			if (activities.some(activity => activity.author === null || !mutedAuthors.has(activity.author))) {

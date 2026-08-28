@@ -104,6 +104,15 @@ function humanComment(timestamp = '2026-08-28T09:30:00Z') {
 	}
 }
 
+function viewerComment(timestamp = '2026-08-28T09:30:00Z') {
+	return {
+		id: 12,
+		user: { login: 'hyldmo', type: 'User' },
+		created_at: timestamp,
+		updated_at: timestamp
+	}
+}
+
 function readyClient(thread = notification(), activities: unknown[] = [botComment()]): FakeClient {
 	const client = new FakeClient()
 	client.responses.set(LATEST_COMMENT_URL, botComment())
@@ -184,6 +193,40 @@ test('matches a state change made by the viewer on the viewer’s pull request',
 		last_read_at: '2026-08-28T09:00:00Z'
 	})
 	const client = readyClient(thread, [])
+	client.pages.set('/repos/acme/widgets/issues/42/timeline', [
+		{
+			event: 'merged',
+			actor: { login: 'hyldmo', type: 'User' },
+			created_at: '2026-08-28T09:59:30Z'
+		}
+	])
+	const stateChangeConfig = config({
+		rules: [
+			{
+				name: 'My pull request state changes',
+				stateChangeAuthors: ['@me'],
+				threadAuthors: ['@me'],
+				subjectTypes: ['PullRequest'],
+				action: 'done'
+			}
+		]
+	})
+
+	const result = await evaluateNotification(client, thread, stateChangeConfig, 'hyldmo')
+
+	assert.deepEqual(result, {
+		decision: 'done',
+		commentAuthor: 'hyldmo',
+		matchedRules: ['My pull request state changes']
+	})
+})
+
+test('matches a state change notification with a comment by the viewer', async () => {
+	const thread = notification({
+		updated_at: '2026-08-28T10:00:00Z',
+		last_read_at: '2026-08-28T09:00:00Z'
+	})
+	const client = readyClient(thread, [viewerComment()])
 	client.pages.set('/repos/acme/widgets/issues/42/timeline', [
 		{
 			event: 'merged',
